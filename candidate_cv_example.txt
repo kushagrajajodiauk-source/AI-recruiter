@@ -1,0 +1,39 @@
+EXAMPLE CV FORMAT - Delete this and replace with actual CV content
+
+Name: Jane Doe
+Email: jane.doe@example.com
+Phone: +1-555-0123
+
+EDUCATION:
+- MBA, Harvard Business School (2020)
+- B.S. Computer Science, MIT (2016)
+
+WORK EXPERIENCE:
+
+Senior Product Manager | Google (2020-Present)
+- Led cross-functional team of 15 engineers and designers
+- Launched 3 major features reaching 50M+ users
+- Increased user engagement by 35% YoY
+
+Product Manager | Facebook (2018-2020)
+- Managed Instagram Stories ads product
+- Generated $100M ARR in first year
+- Collaborated with data science team on ML recommendations
+
+Software Engineer | Amazon (2016-2018)
+- Built microservices for AWS Lambda
+- Reduced latency by 40%
+- On-call rotation for critical services
+
+SKILLS:
+- Product Management: Roadmapping, User Research, A/B Testing
+- Technical: Python, SQL, APIs, System Design
+- Leadership: Stakeholder Management, Team Building, Mentorship
+
+CERTIFICATIONS:
+- Product Management Certificate, Reforge (2021)
+- Scrum Master Certified (2019)
+
+LANGUAGES:
+- English (Native)
+- Spanish (Fluent)

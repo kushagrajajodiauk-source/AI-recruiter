@@ -1,0 +1,21 @@
+# Environment variables
+.env
+
+# Runtime data (generated files)
+candidates/
+jobs/
+matches/
+messages.json
+conversation_log.md
+job_input.txt
+cv_input.txt
+candidate_cv.txt
+job_description.txt
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
