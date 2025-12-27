@@ -2,13 +2,36 @@ import os
 import sys
 import time
 import re
-import google.generativeai as genai
+from groq import Groq
 from dotenv import load_dotenv
 import speech_recognition as sr
 import pyttsx3
 
 # Load environment variables
 load_dotenv()
+
+# Global Groq client
+client = None
+
+def init_groq():
+    """Initialize Groq client"""
+    global client
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        print("Error: GROQ_API_KEY not found in environment variables.")
+        print("Please create a .env file with GROQ_API_KEY=your_key")
+        sys.exit(1)
+    client = Groq(api_key=api_key)
+    return client
+
+def groq_call(messages, model="llama-3.3-70b-versatile", temperature=0.7):
+    """Helper to call Groq API"""
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature
+    )
+    return response.choices[0].message.content
 
 def load_system_prompt():
     try:
@@ -58,6 +81,21 @@ def speak(text):
         print(f"Error in TTS: {e}")
 
 def listen():
+    """Listens to the microphone and returns text."""
+    r = sr.Recognizer()
+    r.pause_threshold = 2.5  # Wait 2.5 seconds before processing (to avoid cutting off mid-sentence)
+    
+    with sr.Microphone() as source:
+        print("\nListening... (Speak now)")
+        # Adjust for ambient noise - reduced duration for faster response
+        r.adjust_for_ambient_noise(source, duration=0.3)
+        try:
+            # Removed phrase_time_limit to allow longer, uninterrupted speech
+            audio = r.listen(source, timeout=10, phrase_time_limit=None)
+            print("Recognizing...")
+            text = r.recognize_google(audio)
+            print(f"You said: {text}")
+            return text
         except sr.WaitTimeoutError:
             message = "I can't hear you. Could you please repeat that?"
             print(f"Jack: {message}")
@@ -101,10 +139,17 @@ def load_cv_input():
         print(f"Warning: Could not read cv_input.txt: {e}")
     return None
 
-def generate_candidate_profile(chat, job_role=None, cv_content=None):
+def generate_candidate_profile(messages, job_role=None, cv_content=None):
     """Generates a candidate profile document based on the conversation and optional CV."""
     print("\n📝 Generating Candidate Profile One-Pager...")
     try:
+        # Load system prompt for generation context
+        try:
+            with open("prompts/jack_persona.md", "r", encoding="utf-8") as f:
+                persona_prompt = f.read()
+        except:
+            persona_prompt = "You are an expert technical recruiter."
+
         role_context = f" for the role of {job_role}" if job_role else ""
         
         # Add CV cross-reference if provided
@@ -148,13 +193,18 @@ If there are any discrepancies between the conversation and CV, note them in the
         
         CRITICAL: At the very beginning, include a line: "CANDIDATE_NAME: [their full name]"
         
-        Format it as a clean, professional Markdown document with clear section headers.
-        Be specific and cite examples from our conversation. For behavioral traits, reference the specific scenarios they shared.
-        """
-        response = chat.send_message(prompt)
+        CRITICAL: At the very beginning, include a line: "CANDIDATE_NAME: [their full name]"
         
-        # Extract candidate name from response
-        content = response.text
+        Format it as a concise **ONE-PAGE SUMMARY**. Do not write a multi-page essay.
+        Use bullet points and short paragraphs. Make it a clean, professional Markdown document.
+        Be specific and cite examples from our conversation. For behavioral traits, reference the specific scenarios they shared.
+        # Call Groq to generate
+        gen_messages = [
+            {"role": "system", "content": persona_prompt},
+            {"role": "user", "content": prompt}
+        ]
+        
+        content = groq_call(gen_messages, model="llama-3.3-70b-versatile")
         candidate_name = "unknown"
         for line in content.split('\n'):
             if 'CANDIDATE_NAME:' in line:
@@ -178,16 +228,35 @@ If there are any discrepancies between the conversation and CV, note them in the
             f.write(content)
             
         print(f"✅ Candidate profile saved to {filename}")
+        
+        # Persist to Database
+        try:
+            from database import add_candidate
+            # Extract name from filename or use safe_name
+            db_name = safe_name.replace("_", " ").title()
+            
+            # Extract basic skills/prefs (simplified for now, ideally parsed from content)
+            # For now we'll pass the whole content as the profile source
+            add_candidate(
+                name=db_name,
+                profile_file=filename,
+                skills=[],  # TODO: extract skills from profile
+                preferences={}  # TODO: extract prefs from profile
+            )
+            print(f"✅ Candidate added to database: {db_name}")
+        except Exception as db_e:
+            print(f"❌ Error adding to database: {db_e}")
+            
         return filename, content
     except Exception as e:
         print(f"❌ Error generating candidate profile: {e}")
         return None, None
 
 def check_for_job_matches(model, candidate_profile_content):
-    """Check if candidate matches any available jobs and suggest to Jill."""
-    from messaging import get_all_job_specs, send_message
-    
-    job_files = get_all_job_specs()
+    """Check if candidate matches any available jobs."""
+    # Logic moved to run_recruiting_loop.py
+    # from messaging import get_all_job_specs, send_message
+    pass
     
     if not job_files:
         print("\n📭 No job specs available from Jill yet.")
@@ -260,60 +329,90 @@ Let me know if you'd like me to reach out to the candidate about this opportunit
 
 
 def main():
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        print("Error: GEMINI_API_KEY not found in environment variables.")
-        print("Please create a .env file with your API key.")
-        sys.exit(1)
-
-    genai.configure(api_key=api_key)
+    # Initialize Groq
+    init_groq()
 
     system_prompt = load_system_prompt()
     
-    # Read messages from Jill
-    from messaging import read_messages
-    print("\n📬 Checking messages from Jill...")
-    messages = read_messages("Jack")
+    # Initialize database
+    from database import init_database, get_agent_messages, mark_message_read, add_candidate
+    init_database()
     
-    if messages:
-        print(f"\n💬 You have {len(messages)} new message(s) from Jill:\n")
-        for msg in messages:
-            print(f"[{msg['timestamp']}] {msg['type'].replace('_', ' ').title()}:")
-            print(f"{msg['content']}\n")
-            print("---\n")
+    # Read messages from Jill (legacy system) - REMOVED
+    # from messaging import read_messages
+    # print("\n📬 Checking messages from Jill...")
+    # messages = read_messages("Jack")
+    
+    # if messages:
+    #     print(f"\n💬 You have {len(messages)} new message(s) from Jill:\n")
+    #     for msg in messages:
+    #         print(f"[{msg['timestamp']}] {msg['type'].replace('_', ' ').title()}:")
+    #         print(f"{msg['content']}\n")
+    #         print("---\n")
+    # else:
+    #     print("No new messages from Jill.\n")
+    
+    # Check for Scout recommendations (new system)
+    print("🔍 Checking Scout recommendations...")
+    scout_messages = get_agent_messages("Jack", unread_only=True)
+    
+    if scout_messages:
+        print(f"\n🎯 Scout found {len(scout_messages)} recommendation(s):\n")
+        for msg in scout_messages:
+            import json
+            metadata = json.loads(msg['metadata']) if msg['metadata'] else {}
+            print(f"   [{msg['message_type']}] {msg['content']}")
+            
+            # If it's a candidate recommendation, show candidates and offer outreach
+            if msg['message_type'] == 'candidate_recommendation':
+                candidates = metadata.get('candidates', [])
+                job_title = metadata.get('job_title', 'Unknown Role')
+                print(f"   Job: {job_title}")
+                print(f"   Found {len(candidates)} candidates:")
+                for c in candidates[:3]:  # Show first 3
+                    print(f"      • {c.get('name', 'Unknown')} - {c.get('headline', '')[:40]}...")
+                print()
+            
+            # If it's a job recommendation for a candidate
+            elif msg['message_type'] == 'job_recommendation':
+                jobs = metadata.get('jobs', [])
+                candidate_name = metadata.get('candidate_name', 'Unknown')
+                print(f"   Candidate: {candidate_name}")
+                print(f"   Found {len(jobs)} matching jobs:")
+                for j in jobs[:3]:
+                    print(f"      • {j.get('title', 'Unknown')[:40]}...")
+                print()
+            
+            mark_message_read(msg['id'])
+        
+        print("   💡 Run `python linkedin_outreach.py` to generate outreach messages.\n")
     else:
-        print("No new messages.\n")
+        print("No new Scout recommendations.\n")
     
     # Check for inputs
     job_requirements = load_job_requirements()
     cv_input = load_cv_input()
     
-    # Try to use the specific flash model, fallback or list models on failure
-    model_name = "gemini-2.0-flash"
+    # Use Groq's Llama model for fast responses
+    model_name = "llama-3.3-70b-versatile"
     
     try:
-        # Initialize the model
-        model = genai.GenerativeModel(
-            model_name=model_name,
-            system_instruction=system_prompt
-        )
-
-        chat = model.start_chat(history=[])
+        # Initialize conversation history for Groq
+        messages = [{"role": "system", "content": system_prompt}]
         
-        # Build Context Prompt
-        context_parts = []
+        # Build better intro message
+        intro_text = "Hey! I'm Jack, your Talent Advocate. I'm here to help you land your next amazing role. Let's talk about your experience and what you're looking for. Tell me - what kind of work have you been doing lately?"
+        
         if job_requirements:
-            context_parts.append(f"You are recruiting for this specific role:\n---\n{job_requirements}\n---")
-        if cv_input:
-            context_parts.append(f"The candidate has provided this CV:\n---\n{cv_input}\n---")
-            
-        if context_parts:
-            context_prompt = "\n".join(context_parts) + "\n\nPlease acknowledge these details. If a CV is provided, ask about specific experiences in it. If a Role is provided, assess their fit for it. Start the conversation naturally."
-            print(f"\n📄 Loading Context (Job Specs: {'Yes' if job_requirements else 'No'}, CV: {'Yes' if cv_input else 'No'})...")
-            response = chat.send_message(context_prompt)
-            intro_text = response.text
-        else:
-            intro_text = "Hello! I'm Jack. I'm here to help you find your next great role."
+            intro_text = "Hey! I'm Jack. I'm currently helping fill a specific role, and I'd love to chat with you about it. But first, tell me about yourself - what's your background?"
+            messages.append({"role": "user", "content": f"CONTEXT: You are recruiting for this role:\n{job_requirements}"})
+            ack = groq_call(messages, model_name)
+            messages.append({"role": "assistant", "content": ack})
+        elif cv_input:
+            intro_text = "Hi! I'm Jack, your Talent Advocate. I've got your CV here - let's dive into your experience. Tell me about your most recent role and what you loved about it!"
+            messages.append({"role": "user", "content": f"CONTEXT: Candidate provided this CV:\n{cv_input}"})
+            ack = groq_call(messages, model_name)
+            messages.append({"role": "assistant", "content": ack})
 
         print(f"Jack (Talent Advocate) [{model_name}]: {intro_text}")
         speak(intro_text)
@@ -325,8 +424,9 @@ def main():
                 if not user_input:
                     continue
 
+                # Check for exit keywords BEFORE sending to AI
                 if user_input.lower() in ['quit', 'exit', 'stop', 'goodbye']:
-                    # Check if we already have the CV from start
+                    # DON'T send "goodbye" to the AI, handle it directly
                     cv_content = cv_input
                     
                     if not cv_content:
@@ -366,8 +466,8 @@ def main():
                                             cv_content = f.read()
                                         os.remove("candidate_cv.txt")
                                         print("✅ CV processed and file deleted")
-                                    except:
-                                        pass
+                                    except Exception as e:
+                                        print(f"⚠️ Couldn't read CV file: {e}")
                     
                         if not cv_content:
                             no_cv_msg = "No problem! I'll create your profile based on our conversation."
@@ -375,7 +475,7 @@ def main():
                             speak(no_cv_msg)
                     
                     # Generate Profile with optional CV cross-reference
-                    result = generate_candidate_profile(chat, job_role="Target Role" if job_requirements else None, cv_content=cv_content)
+                    result = generate_candidate_profile(messages, job_role="Target Role" if job_requirements else None, cv_content=cv_content)
                     
                     if result and result[0]:
                         filename, profile_content = result
@@ -389,27 +489,25 @@ def main():
                             print(profile_content)
                             print("="*60)
                             
-                            # Ask for approval
-                            approval_message = "I've generated your candidate profile above. Please review it. Would you like me to save this and share it with Jill? Say 'yes' to approve or 'no' if you want changes."
-                            print(f"\nJack: {approval_message}")
-                            speak(approval_message)
+                            # Ask for approval - REMOVED (Auto-save now)
+                            # approval_message = "I've generated your candidate profile above..."
+                            # print(f"\nJack: {approval_message}")
+                            # speak(approval_message)
                             
-                            # Wait for approval
-                            approval = listen()
+                            # Wait for approval - REMOVED (Auto-save now)
+                            approval = "yes"  # Auto-approve
                             
                             if approval and approval.lower() in ['yes', 'yeah', 'yep', 'sure', 'approve', 'good', 'looks good', 'perfect']:
-                                # Save and share
-                                from messaging import send_message
+                                # Save and share - REMOVED legacy messaging
+                                # from messaging import send_message
                                 
-                                # Overwrite file with latest content
-                                with open(filename, "w", encoding="utf-8") as f:
-                                    f.write(profile_content)
+                                # Overwrite file with latest content (already saved by generate_candidate_profile)
+                                # with open(filename, "w", encoding="utf-8") as f:
+                                #     f.write(profile_content)
                                 
-                                send_message("Jack", "Jill", "candidate_profile", 
-                                           f"I've just completed an interview and built a candidate profile. Check out {filename}!",
-                                           {"candidate_file": filename})
+                                # send_message(...) - REMOVED
                                 
-                                print(f"📤 Sent candidate profile to Jill")
+                                print(f"📤 Saved candidate profile (Jill will see it in the DB)")
                                 
                                 # Check for matches
                                 check_for_job_matches(model, profile_content)
@@ -442,10 +540,10 @@ Candidate feedback: {feedback}
 Please generate an UPDATED version incorporating their feedback. Keep the same format and structure, but make the requested changes. Include the "CANDIDATE_NAME: [name]" line at the beginning."""
 
                                 print("\n🔄 Updating candidate profile...")
-                                update_response = chat.send_message(update_prompt)
+                                update_messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": update_prompt}]
                                 
                                 # Extract updated content
-                                updated_content = update_response.text
+                                updated_content = groq_call(update_messages)
                                 for line in updated_content.split('\n'):
                                     if 'CANDIDATE_NAME:' in line:
                                         updated_content = updated_content.replace(line, "").strip()
@@ -460,10 +558,11 @@ Please generate an UPDATED version incorporating their feedback. Keep the same f
                         speak(error_msg)
                     break  # Exit main conversation loop
 
-                response = chat.send_message(user_input)
-                print(f"\nJack: {response.text}")
-                speak(response.text)
-
+                messages.append({"role": "user", "content": user_input})
+                ai_response = groq_call(messages, model_name)
+                messages.append({"role": "assistant", "content": ai_response})
+                print(f"\nJack: {ai_response}")
+                speak(ai_response)
             except KeyboardInterrupt:
                 print("\nJack: Goodbye!")
                 break

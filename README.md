@@ -1,64 +1,159 @@
-# 🎯 AI Recruiter System
+# AI Recruiting System
 
-An intelligent, voice-based recruitment system where AI agents (Jack & Jill) interview people and then discuss matches together.
+An intelligent, multi-agent recruitment system where AI agents (Jack, Jill & Scout) collaborate to match candidates with jobs.
+
+## 🤖 The Agents
+
+### 1. **JACK** (Candidate Agent)
+- **Role:** Talent Advocate
+- **Action:** Voice interviews with candidates to build comprehensive profiles
+- **Output:** Candidate Profile (saved to database)
+
+### 2. **JILL** (Hiring Manager Agent)
+- **Role:** Talent Acquisition Partner
+- **Action:** Voice interviews with hiring managers to understand roles
+- **Output:** Job Specification (saved to database)
+
+### 3. **SCOUT** (Sourcing Agent)
+- **Role:** External Sourcer
+- **Action:** Searches LinkedIn when internal matches aren't found
+- **Output:** External candidate suggestions
 
 ---
 
-## 🚀 Quick Start Workflow
+## 🚀 Setup
 
-### **1. Interview Hiring Manager (Jill)**
-**Goal:** Create a Job Specification.
+1. **Install dependencies:**
 ```bash
-python jill_agent.py
+pip install -r requirements.txt
 ```
-- **Voice Interview:** Jill asks you about the role, company, and requirements.
-- **Optional Input:** Create `job_input.txt` beforehand to pre-load details (auto-deleted after use).
-- **Optional Upload:** At the end, Jill asks if you have a JD file to upload (cross-references it).
-- **Output:** Saves a job spec to `jobs/` folder.
 
-### **2. Interview Candidates (Jack)**
-**Goal:** Create Candidate Profiles.
+2. **Get your FREE Groq API key:**
+   - Visit https://console.groq.com/
+   - Sign up (free)
+   - Create an API key
+   
+3. **Create `.env` file:**
+```
+GROQ_API_KEY=your_groq_api_key_here
+```
+
+---
+
+## 📋 Scripts & Execution Order
+
+### **STEP 1: Data Collection**
+Run these scripts to populate your database with candidates and jobs.
+
+#### Option A: Interview a Candidate
 ```bash
 python jack_agent.py
 ```
-- **Voice Interview:** Jack asks you about your experience, education, and behavioral scenarios.
-- **Optional Input:** Create `cv_input.txt` beforehand to pre-load your CV (auto-deleted after use).
-- **Optional Upload:** At the end, Jack asks if you have a CV file to upload (cross-references it).
-- **Output:** Saves a candidate profile to `candidates/` folder.
+- **What it does:** Voice interview with a candidate
+- **Questions asked:** Background, education, work history, skills, location, salary expectations
+- **Output:** Candidate profile saved to `candidates/` and database
+- **When to run:** When you have a new candidate to interview
 
-### **3. Match & Discuss (The Magic ✨)**
-**Goal:** Agents discuss candidates and decide who to interview.
+#### Option B: Brief a Hiring Manager
 ```bash
-python discuss_matches.py
+python jill_agent.py
 ```
-- **Process:**
-  1. Jack screens ALL candidates for each job.
-  2. Jack shortlists the top 3-5 matches.
-  3. Jill reviews the shortlist.
-  4. They agree on a decision: 🎯 INTERVIEW, ⚠️ BACKUP, or ❌ PASS.
-- **Output:** Generates detailed reports in `matches/` folder.
-
-### **4. View Results**
-**Goal:** See what happened.
-- **Match Reports:** Open `matches/job_discussions_*.md` (Best for reading rankings & decisions).
-- **Full Log:** Open `conversation_log.md` (Chronological history of everything).
-- **Check Messages:** Run `python check_messages.py` to see the internal message queue.
+- **What it does:** Voice interview with a hiring manager
+- **Questions asked:** Company, team, role, requirements, culture, location, salary budget
+- **Output:** Job specification saved to `jobs/` and database
+- **When to run:** When you have a new job opening to fill
 
 ---
 
-## 📂 Key Files
-- `jack_agent.py`: Candidate interviewer.
-- `jill_agent.py`: Hiring manager interviewer.
-- `discuss_matches.py`: The matching engine.
-- `check_messages.py`: Message viewer.
-- `candidates/`: Where candidate profiles live.
-- `jobs/`: Where job specs live.
-- `matches/`: Where final decisions live.
+### **STEP 2: The Agent Boardroom (Matching & Negotiation)**
+Once you have candidates AND jobs in the database, run this:
 
-## 🔒 Security Note
-- Any input files (`cv_input.txt`, `job_input.txt`, etc.) are **automatically deleted** after being read to prevent data leakage between users.
+```bash
+python run_recruiting_loop.py
+```
+- **What it does:** Orchestrates the entire matching process
+- **The Flow:**
+  1. Jill pitches the role and requirements
+  2. Jack evaluates his candidates (scores 0-10 based on potential)
+  3. Jack pitches suitable candidates to Jill
+  4. Jill independently scores each candidate (0-10 based on requirements)
+  5. System calculates average score
+  6. **IF average > 8:** ✅ Interview scheduled, match saved
+  7. **IF average ≤ 8:** ❌ Candidate rejected with reasoning
+  8. If no internal match found, Scout searches LinkedIn
+- **Output:** Full conversation transcript in `negotiation_log.md`
+- **When to run:** After collecting candidates and jobs
 
-## 🛠️ Setup
-1. Install requirements: `pip install -r requirements.txt`
-2. Add API key to `.env`: `GEMINI_API_KEY=your_key`
-3. Run the scripts!
+---
+
+### **STEP 3: Verification (Optional)**
+Check what's in your database:
+
+```bash
+python verify_persistence.py
+```
+- **What it does:** Shows all candidates, jobs, and matches in the database
+- **Output:** Summary printed to console
+- **When to run:** To verify data was saved correctly
+
+---
+
+### **STEP 4: Outreach (Future)**
+```bash
+python linkedin_outreach.py
+```
+- **What it does:** Generates personalized outreach messages
+- **Status:** Manual assist mode (you review before sending)
+- **When to run:** After matches are confirmed
+
+---
+
+## 📂 Core Files
+
+| File | Purpose |
+|------|---------|
+| `jack_agent.py` | Candidate interview agent (voice + AI) |
+| `jill_agent.py` | Hiring manager interview agent (voice + AI) |
+| `run_recruiting_loop.py` | **Master orchestration script** (matching & negotiation) |
+| `scout_agent.py` | LinkedIn sourcing utilities |
+| `database.py` | SQLite database functions |
+| `verify_persistence.py` | Database verification tool |
+| `linkedin_outreach.py` | Outreach message generator |
+
+---
+
+## 📁 Directory Structure
+
+```
+AI Recruiter/
+├── data/
+│   └── recruiter.db          # SQLite database
+├── candidates/               # Generated candidate profiles (.md)
+├── jobs/                     # Generated job specs (.md)
+├── prompts/
+│   ├── jack_persona.md       # Jack's behavioral instructions
+│   └── jill_persona.md       # Jill's behavioral instructions
+├── negotiation_log.md        # Latest boardroom transcript
+└── [scripts listed above]
+```
+
+---
+
+## 💡 Quick Start Example
+
+```bash
+# 1. Interview a candidate
+python jack_agent.py
+# Talk about your background, say "goodbye" when done
+
+# 2. Interview a hiring manager
+python jill_agent.py
+# Describe the role, say "goodbye" when done
+
+# 3. Run the matching
+python run_recruiting_loop.py
+# Watch Jack and Jill negotiate in the "Boardroom"
+
+# 4. Check matches
+python verify_persistence.py
+```

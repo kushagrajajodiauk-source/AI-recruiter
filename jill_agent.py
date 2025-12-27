@@ -2,13 +2,36 @@ import os
 import sys
 import time
 import re
-import google.generativeai as genai
+from groq import Groq
 from dotenv import load_dotenv
 import speech_recognition as sr
 import pyttsx3
 
 # Load environment variables
 load_dotenv()
+# Global Groq client
+client = None
+
+def init_groq():
+    """Initialize Groq client"""
+    global client
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        print("Error: GROQ_API_KEY not found in environment variables.")
+        print("Please create a .env file with GROQ_API_KEY=your_key")
+        sys.exit(1)
+    client = Groq(api_key=api_key)
+    return client
+
+def groq_call(messages, model="llama-3.3-70b-versatile", temperature=0.7):
+    """Helper to call Groq API"""
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature
+    )
+    return response.choices[0].message.content
+
 
 def load_system_prompt():
     try:
@@ -24,7 +47,7 @@ def init_engine():
     
     # Set Rate (Speed) - Slower for better clarity
     rate = engine.getProperty('rate')
-    engine.setProperty('rate', rate - 30)  # Reduce speed by 30
+    engine.setProperty('rate', rate)  # Standard speed (removed slowdown)
     
     # Set Voice (Female)
     voices = engine.getProperty('voices')
@@ -60,6 +83,21 @@ def speak(text):
         print(f"Error in TTS: {e}")
 
 def listen():
+    """Listens to the microphone and returns text."""
+    r = sr.Recognizer()
+    r.pause_threshold = 1.5  # Wait 1.5 seconds before processing
+    
+    with sr.Microphone() as source:
+        print("\nListening... (Speak now)")
+        # Adjust for ambient noise - reduced duration for faster response
+        r.adjust_for_ambient_noise(source, duration=0.3)
+        try:
+            audio = r.listen(source, timeout=10, phrase_time_limit=None)
+            print("Recognizing...")
+            text = r.recognize_google(audio)
+            print(f"You said: {text}")
+            return text
+        except sr.WaitTimeoutError:
             message = "I can't hear you. Could you please repeat that?"
             print(f"Jill: {message}")
             speak(message)
@@ -73,7 +111,7 @@ def listen():
             print(f"Could not request results; {e}")
             return None
 
-def generate_job_spec(chat, jd_content=None):
+def generate_job_spec(messages, jd_content=None):
     """Generates a job specification document based on the conversation and optional job description."""
     print("\n📝 Generating Job Requirement One-Pager...")
     try:
@@ -111,13 +149,19 @@ If there are any discrepancies between the conversation and the job description,
         
         CRITICAL: At the very beginning, include a line: "JOB_TITLE: [the job title]"
         
-        Format it as a clean, professional Markdown document with clear section headers.
+        Format it as a concise **ONE-PAGE SUMMARY**. Do not write a multi-page essay.
+        Use bullet points and short paragraphs. Make it a clean, professional Markdown document.
         Be specific and cite examples from our conversation.
         """
-        response = chat.send_message(prompt)
+        messages.append({"role": "user", "content": prompt})
+        
+        # Call Groq to generate
+        model_name = "llama-3.3-70b-versatile"
+        response_text = groq_call(messages, model_name)
+        messages.append({"role": "assistant", "content": response_text})
         
         # Extract job title from response
-        content = response.text
+        content = response_text
         job_title = "unknown"
         for line in content.split('\n'):
             if 'JOB_TITLE:' in line:
@@ -139,6 +183,23 @@ If there are any discrepancies between the conversation and the job description,
             f.write(content)
             
         print(f"✅ Job requirements saved to {filename}")
+        
+        # Persist to Database
+        try:
+            from database import add_job
+            # Extract title/company from filename or use safe_title
+            db_title = safe_title.replace("_", " ").title()
+            
+            add_job(
+                title=db_title,
+                company="Unknown", # TODO: Parse from content
+                spec_file=filename,
+                requirements=[] # TODO: extract requirements
+            )
+            print(f"✅ Job added to database: {db_title}")
+        except Exception as db_e:
+            print(f"❌ Error adding to database: {db_e}")
+            
         return filename, content
     except Exception as e:
         print(f"❌ Error generating job spec: {e}")
@@ -210,8 +271,8 @@ Provide:
 
 Format: Start with "MATCH_SCORE: X.XX" then your analysis."""
 
-            response = model.generate_content(match_prompt)
-            analysis = response.text
+            match_messages = [{"role": "user", "content": match_prompt}]
+            analysis = groq_call(match_messages)
             
             score_line = [line for line in analysis.split('\n') if 'MATCH_SCORE' in line]
             match_score = 0.0
@@ -247,41 +308,66 @@ Would you like me to reach out to see if they're interested?"""
 
 
 def main():
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        print("Error: GEMINI_API_KEY not found in environment variables.")
-        print("Please create a .env file with your API key.")
-        sys.exit(1)
-
-    genai.configure(api_key=api_key)
+    init_groq()
 
     system_prompt = load_system_prompt()
     
-    from messaging import read_messages
-    print("\n📬 Checking messages from Jack...")
-    messages = read_messages("Jill")
+    # Initialize database
+    from database import init_database, get_agent_messages, mark_message_read, add_job
+    init_database()
     
-    if messages:
-        print(f"\n💬 You have {len(messages)} new message(s) from Jack:\n")
-        for msg in messages:
-            print(f"[{msg['timestamp']}] {msg['type'].replace('_', ' ').title()}:")
-            print(f"{msg['content']}\n")
-            print("---\n")
+    # Read messages from Jack (legacy system) - REMOVED
+    # from messaging import read_messages
+    # print("\n📬 Checking messages from Jack...")
+    # messages = read_messages("Jill")
+    
+    # if messages:
+    #     print(f"\n💬 You have {len(messages)} new message(s) from Jack:\n")
+    #     for msg in messages:
+    #         print(f"[{msg['timestamp']}] {msg['type'].replace('_', ' ').title()}:")
+    #         print(f"{msg['content']}\n")
+    #         print("---\n")
+    # else:
+    #     print("No new messages from Jack.\n")
+    
+    # Check for Scout recommendations (new system)
+    print("🔍 Checking Scout recommendations...")
+    scout_messages = get_agent_messages("Jill", unread_only=True)
+    
+    if scout_messages:
+        print(f"\n🎯 Scout found {len(scout_messages)} recommendation(s):\n")
+        for msg in scout_messages:
+            import json
+            metadata = json.loads(msg['metadata']) if msg['metadata'] else {}
+            print(f"   [{msg['message_type']}] {msg['content']}")
+            
+            # If it's an outreach opportunity (jobs found for a candidate)
+            if msg['message_type'] == 'outreach_opportunity':
+                jobs = metadata.get('jobs', [])
+                candidate_name = metadata.get('candidate_name', 'Unknown')
+                print(f"   Candidate: {candidate_name}")
+                print(f"   Found {len(jobs)} companies to reach out to:")
+                for j in jobs[:3]:
+                    company = j.get('company', 'Unknown')
+                    title = j.get('title', 'Unknown')
+                    print(f"      • {company} - {title[:30]}...")
+                print()
+            
+            mark_message_read(msg['id'])
+        
+        print("   💡 Run `python linkedin_outreach.py` to generate hiring manager messages.\n")
     else:
-        print("No new messages.\n")
+        print("No new Scout recommendations.\n")
     
     job_input = load_job_input()
     candidate_profile = load_candidate_profile()
     
-    model_name = "gemini-2.0-flash"
+    model_name = "llama-3.3-70b-versatile"
     
     try:
-        model = genai.GenerativeModel(
-            model_name=model_name,
-            system_instruction=system_prompt
-        )
+        messages = [{"role": "system", "content": system_prompt}]
 
-        chat = model.start_chat(history=[])
+        # Using messages array for Groq
         
         context_parts = []
         if job_input:
@@ -292,8 +378,9 @@ def main():
         if context_parts:
             context_prompt = "\n".join(context_parts) + "\n\nPlease acknowledge these details. If a Candidate Profile is provided, mention if they might be a fit for this new role or if we need a different profile. Start the conversation naturally."
             print(f"\n📄 Loading Context (Job Input: {'Yes' if job_input else 'No'}, Candidate Profile: {'Yes' if candidate_profile else 'No'})...")
-            response = chat.send_message(context_prompt)
-            intro_text = response.text
+            messages.append({"role": "user", "content": context_prompt})
+            intro_text = groq_call(messages, model_name)
+            messages.append({"role": "assistant", "content": intro_text})
         else:
             intro_text = "Hello! I'm Jill, your Talent Acquisition Partner. It's a pleasure to meet you. How can I help you build your team today? What role are we looking to fill?"
 
@@ -307,13 +394,14 @@ def main():
                 if not user_input:
                     continue
 
+                # Check for exit keywords BEFORE sending to AI
                 if user_input.lower() in ['quit', 'exit', 'stop', 'goodbye']:
-                    # Check if we already have the JD from start
+                    # DON'T send "goodbye" to the AI, handle it directly
                     jd_content = job_input
                     
                     if not jd_content:
                         # Ask for job description file upload ONLY if not provided at start
-                        jd_request = "Great discussion! One more thing - do you have a written job description or requirements document you'd like to share? This will help me create a more complete job spec by cross-referencing what we discussed. If yes, please paste the job description into a file called 'job_description.txt' in this directory and then say 'ready'. If not, just say 'no' or 'skip'."
+                        jd_request = "Before we finish - do you have a written job spec to share? If yes, paste it into 'job_description.txt' and say 'ready'. Otherwise, say 'no'."
                         print(f"\nJill: {jd_request}")
                         speak(jd_request)
                         
@@ -357,7 +445,7 @@ def main():
                             speak(no_jd_msg)
                     
                     # Generate job spec with optional JD cross-reference
-                    result = generate_job_spec(chat, jd_content=jd_content)
+                    result = generate_job_spec(messages, jd_content=jd_content)
                     
                     if result and result[0]:
                         filename, job_spec_content = result
@@ -371,28 +459,26 @@ def main():
                             print(job_spec_content)
                             print("="*60)
                             
-                            # Ask for approval
-                            approval_message = "I've generated the job specification above. Please review it. Would you like me to save this and share it with Jack? Say 'yes' to approve or 'no' if you want changes."
-                            print(f"\nJill: {approval_message}")
-                            speak(approval_message)
+                            # Ask for approval - REMOVED (Auto-save now)
+                            # approval_message = "I've generated the job specification above..."
+                            # print(f"\nJill: {approval_message}")
+                            # speak(approval_message)
                             
-                            # Wait for approval
-                            approval = listen()
+                            # Wait for approval - REMOVED (Auto-save now)
+                            approval = "yes"  # Auto-approve
                             
                             if approval and approval.lower() in ['yes', 'yeah', 'yep', 'sure', 'approve', 'good', 'looks good', 'perfect']:
                                 # Save and share
-                                from messaging import send_message
+                                # from messaging import send_message - REMOVED
                                 
                                 # Overwrite file with latest content
                                 with open(filename, "w", encoding="utf-8") as f:
                                     f.write(job_spec_content)
                                 
-                                send_message("Jill", "Jack", "job_spec", 
-                                           f"I've just completed a job intake and created a job requirement spec. Check out {filename}!",
-                                           {"job_file": filename})
+                                # send_message("Jill", "Jack", "job_spec", ...) - REMOVED
                                 
-                                print(f"📤 Sent job spec to Jack")
-                                check_for_candidate_matches(model, job_spec_content)
+                                print(f"📤 Saved job spec (Jack will see it in the DB)")
+                                # check_for_candidate_matches(model, job_spec_content) - Moved to run_recruiting_loop.py
                                 
                                 success_msg = "Perfect! I've saved it and shared it with Jack. He'll start looking for matching candidates right away. Goodbye!"
                                 print(f"\nJill: {success_msg}")
@@ -422,10 +508,10 @@ User feedback: {feedback}
 Please generate an UPDATED version incorporating their feedback. Keep the same format and structure, but make the requested changes. Include the "JOB_TITLE: [title]" line at the beginning."""
 
                                 print("\n🔄 Updating job specification...")
-                                update_response = chat.send_message(update_prompt)
+                                update_messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": update_prompt}]
+                                updated_content = groq_call(update_messages)
                                 
                                 # Extract updated content
-                                updated_content = update_response.text
                                 for line in updated_content.split('\n'):
                                     if 'JOB_TITLE:' in line:
                                         updated_content = updated_content.replace(line, "").strip()
@@ -440,9 +526,11 @@ Please generate an UPDATED version incorporating their feedback. Keep the same f
                         speak(error_msg)
                     break  # Exit main conversation loop
 
-                response = chat.send_message(user_input)
-                print(f"\nJill: {response.text}")
-                speak(response.text)
+                messages.append({"role": "user", "content": user_input})
+                response_text = groq_call(messages, model_name)
+                messages.append({"role": "assistant", "content": response_text})
+                print(f"\nJill: {response_text}")
+                speak(response_text)
 
             except KeyboardInterrupt:
                 print("\nJill: Goodbye!")
